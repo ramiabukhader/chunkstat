@@ -79,6 +79,39 @@ func TestScanRejectsInvalidInputs(t *testing.T) {
 	}
 }
 
+func TestScanAppliesPortableExclusionPatterns(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "keep.go", "one\n")
+	writeTestFile(t, root, "generated/code.go", "one\ntwo\n")
+	writeTestFile(t, root, "nested/cache.tmp", "three\n")
+
+	report, err := ScanWithOptions(root, ScanOptions{
+		LargestLimit:    10,
+		ExcludePatterns: []string{`generated`, `nested\*.tmp`},
+	})
+	if err != nil {
+		t.Fatalf("ScanWithOptions() error = %v", err)
+	}
+	if report.Files != 1 || report.TotalLines != 1 {
+		t.Fatalf("report = %#v, want only keep.go", report)
+	}
+	wantExcluded := []string{"generated", "nested/cache.tmp"}
+	if !reflect.DeepEqual(report.ExcludedPaths, wantExcluded) {
+		t.Fatalf("ExcludedPaths = %#v, want %#v", report.ExcludedPaths, wantExcluded)
+	}
+}
+
+func TestNormalizeExcludePatternRejectsUnsafeValues(t *testing.T) {
+	for _, pattern := range []string{"", "../outside", `..\outside`, `C:\outside`, filepath.Join(t.TempDir(), "absolute")} {
+		if _, err := NormalizeExcludePattern(pattern); err == nil {
+			t.Errorf("NormalizeExcludePattern(%q) error = nil", pattern)
+		}
+	}
+	if got, err := NormalizeExcludePattern(`generated\*.go`); err != nil || got != "generated/*.go" {
+		t.Fatalf("NormalizeExcludePattern() = %q, %v", got, err)
+	}
+}
+
 func TestCountLines(t *testing.T) {
 	tests := []struct {
 		name    string

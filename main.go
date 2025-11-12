@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ramiabukhader/chunkstat/internal/stats"
 )
@@ -21,6 +22,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	top := flags.Int("top", 10, "number of largest files to display")
 	asJSON := flags.Bool("json", false, "print the report as JSON")
+	var exclusions excludeValues
+	flags.Var(&exclusions, "exclude", "repository-relative exclusion pattern (repeatable)")
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: chunkstat [flags] [directory]")
 		fmt.Fprintln(stderr, "\nScan a directory and summarize file and line counts.")
@@ -48,7 +51,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		root = flags.Arg(0)
 	}
 
-	report, err := stats.Scan(root, *top)
+	report, err := stats.ScanWithOptions(root, stats.ScanOptions{
+		LargestLimit:    *top,
+		ExcludePatterns: exclusions,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "chunkstat: %v\n", err)
 		return 1
@@ -73,6 +79,7 @@ func printReport(output io.Writer, report stats.Report) {
 	fmt.Fprintf(output, "Files:           %d\n", report.Files)
 	fmt.Fprintf(output, "Total lines:     %d\n", report.TotalLines)
 	fmt.Fprintf(output, "Ignored folders: %d\n", len(report.IgnoredFolders))
+	fmt.Fprintf(output, "Excluded paths:  %d\n", len(report.ExcludedPaths))
 
 	fmt.Fprintln(output, "\nBy extension:")
 	fmt.Fprintf(output, "  %-16s %10s %12s\n", "EXTENSION", "FILES", "LINES")
@@ -94,6 +101,28 @@ func printReport(output io.Writer, report stats.Report) {
 			fmt.Fprintf(output, "  %s\n", filepath.ToSlash(path))
 		}
 	}
+
+	if len(report.ExcludedPaths) > 0 {
+		fmt.Fprintln(output, "\nExcluded paths:")
+		for _, excluded := range report.ExcludedPaths {
+			fmt.Fprintf(output, "  %s\n", filepath.ToSlash(excluded))
+		}
+	}
+}
+
+type excludeValues []string
+
+func (values *excludeValues) String() string {
+	return strings.Join(*values, ",")
+}
+
+func (values *excludeValues) Set(value string) error {
+	normalized, err := stats.NormalizeExcludePattern(value)
+	if err != nil {
+		return err
+	}
+	*values = append(*values, normalized)
+	return nil
 }
 
 func formatBytes(size int64) string {

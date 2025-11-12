@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -42,14 +43,35 @@ type Report struct {
 	ByExtension    []ExtensionStat `json:"by_extension"`
 	LargestFiles   []FileStat      `json:"largest_files"`
 	IgnoredFolders []string        `json:"ignored_folders"`
+	ExcludedPaths  []string        `json:"excluded_paths"`
+}
+
+// ScanOptions controls result size and repository-relative exclusions.
+type ScanOptions struct {
+	LargestLimit    int
+	ExcludePatterns []string
 }
 
 // Scan walks root without following directory symlinks. It counts regular files,
 // skips common dependency and build folders, and returns up to largestLimit files
 // ordered by size. Binary files count as files but contribute zero lines.
 func Scan(root string, largestLimit int) (Report, error) {
+	return ScanWithOptions(root, ScanOptions{LargestLimit: largestLimit})
+}
+
+// ScanWithOptions scans root with validated, slash-normalized exclusion globs.
+func ScanWithOptions(root string, options ScanOptions) (Report, error) {
+	largestLimit := options.LargestLimit
 	if largestLimit < 0 {
 		return Report{}, fmt.Errorf("largest-file limit must be zero or greater")
+	}
+	patterns := make([]string, 0, len(options.ExcludePatterns))
+	for _, pattern := range options.ExcludePatterns {
+		normalized, err := NormalizeExcludePattern(pattern)
+		if err != nil {
+			return Report{}, err
+		}
+		patterns = append(patterns, normalized)
 	}
 
 	absoluteRoot, err := filepath.Abs(root)
@@ -69,6 +91,7 @@ func Scan(root string, largestLimit int) (Report, error) {
 		ByExtension:    make([]ExtensionStat, 0),
 		LargestFiles:   make([]FileStat, 0),
 		IgnoredFolders: make([]string, 0),
+		ExcludedPaths:  make([]string, 0),
 	}
 	byExtension := make(map[string]*ExtensionStat)
 	files := make([]FileStat, 0)
@@ -82,6 +105,18 @@ func Scan(root string, largestLimit int) (Report, error) {
 				report.IgnoredFolders = append(report.IgnoredFolders, relativePath(absoluteRoot, path))
 				return filepath.SkipDir
 			}
+			if path != absoluteRoot {
+				relative := filepath.ToSlash(relativePath(absoluteRoot, path))
+				if matchesExclusion(relative, patterns) {
+					report.ExcludedPaths = append(report.ExcludedPaths, relative)
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		relative := filepath.ToSlash(relativePath(absoluteRoot, path))
+		if matchesExclusion(relative, patterns) {
+			report.ExcludedPaths = append(report.ExcludedPaths, relative)
 			return nil
 		}
 
@@ -108,7 +143,7 @@ func Scan(root string, largestLimit int) (Report, error) {
 		report.Files++
 		report.TotalLines += lines
 		files = append(files, FileStat{
-			Path:  relativePath(absoluteRoot, path),
+			Path:  relative,
 			Bytes: info.Size(),
 			Lines: lines,
 		})
@@ -125,6 +160,7 @@ func Scan(root string, largestLimit int) (Report, error) {
 		return report.ByExtension[i].Extension < report.ByExtension[j].Extension
 	})
 	sort.Strings(report.IgnoredFolders)
+	sort.Strings(report.ExcludedPaths)
 	sort.Slice(files, func(i, j int) bool {
 		if files[i].Bytes == files[j].Bytes {
 			return files[i].Path < files[j].Path
@@ -137,6 +173,43 @@ func Scan(root string, largestLimit int) (Report, error) {
 	report.LargestFiles = append(report.LargestFiles, files[:largestLimit]...)
 
 	return report, nil
+}
+
+// NormalizeExcludePattern validates a pattern and returns portable slash form.
+func NormalizeExcludePattern(patternValue string) (string, error) {
+	normalized := strings.ReplaceAll(strings.TrimSpace(patternValue), "\\", "/")
+	if normalized == "" {
+		return "", fmt.Errorf("exclude pattern must not be empty")
+	}
+	if filepath.IsAbs(patternValue) || path.IsAbs(normalized) || filepath.VolumeName(patternValue) != "" || hasWindowsDrive(normalized) {
+		return "", fmt.Errorf("exclude pattern must be repository-relative: %q", patternValue)
+	}
+	normalized = strings.TrimPrefix(normalized, "./")
+	cleaned := path.Clean(normalized)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("exclude pattern must not traverse outside the scan root: %q", patternValue)
+	}
+	if _, err := path.Match(cleaned, "validation"); err != nil {
+		return "", fmt.Errorf("invalid exclude pattern %q: %w", patternValue, err)
+	}
+	return cleaned, nil
+}
+
+func hasWindowsDrive(value string) bool {
+	return len(value) >= 2 && value[1] == ':' && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z'))
+}
+
+func matchesExclusion(relative string, patterns []string) bool {
+	for _, patternValue := range patterns {
+		matched, _ := path.Match(patternValue, relative)
+		if matched {
+			return true
+		}
+		if !strings.ContainsAny(patternValue, "*?[") && strings.HasPrefix(relative, patternValue+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func isIgnoredDirectory(name string) bool {
