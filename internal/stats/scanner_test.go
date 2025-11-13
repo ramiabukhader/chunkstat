@@ -1,9 +1,12 @@
 package stats
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -109,6 +112,43 @@ func TestNormalizeExcludePatternRejectsUnsafeValues(t *testing.T) {
 	}
 	if got, err := NormalizeExcludePattern(`generated\*.go`); err != nil || got != "generated/*.go" {
 		t.Fatalf("NormalizeExcludePattern() = %q, %v", got, err)
+	}
+}
+
+func TestScanPreservesPartialResultsAndSanitizesReadErrors(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "z-good.txt", "one\ntwo\n")
+	writeTestFile(t, root, "a-bad.txt", "secret fixture must not appear")
+
+	report, err := scanWithOptions(root, ScanOptions{LargestLimit: 10}, func(filePath string) (int, error) {
+		if filepath.Base(filePath) == "a-bad.txt" {
+			return 0, errors.New("synthetic failure containing " + filePath)
+		}
+		return countLines(filePath)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Version != "1" || report.Files != 1 || report.TotalLines != 2 {
+		t.Fatalf("report = %#v", report)
+	}
+	wantErrors := []ScanIssue{{Kind: "read-error", Path: "a-bad.txt", Message: "cannot read file"}}
+	if !reflect.DeepEqual(report.Errors, wantErrors) {
+		t.Fatalf("Errors = %#v, want %#v", report.Errors, wantErrors)
+	}
+	encoded := fmt.Sprintf("%#v", report.Errors)
+	if strings.Contains(encoded, root) || strings.Contains(encoded, "secret fixture") {
+		t.Fatalf("error report leaked root/content: %s", encoded)
+	}
+}
+
+func TestScanInitializesVersionedEmptyArrays(t *testing.T) {
+	report, err := Scan(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Version != "1" || report.ByExtension == nil || report.LargestFiles == nil || report.IgnoredFolders == nil || report.ExcludedPaths == nil || report.Errors == nil {
+		t.Fatalf("report contains unstable nil fields: %#v", report)
 	}
 }
 

@@ -18,12 +18,17 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithScanner(args, stdout, stderr, stats.ScanWithOptions)
+}
+
+func runWithScanner(args []string, stdout, stderr io.Writer, scan func(string, stats.ScanOptions) (stats.Report, error)) int {
 	flags := flag.NewFlagSet("chunkstat", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	top := flags.Int("top", 10, "number of largest files to display")
 	asJSON := flags.Bool("json", false, "print the report as JSON")
 	var exclusions excludeValues
 	flags.Var(&exclusions, "exclude", "repository-relative exclusion pattern (repeatable)")
+	failOnErrors := flags.Bool("fail-on-errors", false, "exit 3 when a scan completes with path errors")
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: chunkstat [flags] [directory]")
 		fmt.Fprintln(stderr, "\nScan a directory and summarize file and line counts.")
@@ -51,7 +56,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		root = flags.Arg(0)
 	}
 
-	report, err := stats.ScanWithOptions(root, stats.ScanOptions{
+	report, err := scan(root, stats.ScanOptions{
 		LargestLimit:    *top,
 		ExcludePatterns: exclusions,
 	})
@@ -67,10 +72,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "chunkstat: write report: %v\n", err)
 			return 1
 		}
+		if *failOnErrors && len(report.Errors) > 0 {
+			return 3
+		}
 		return 0
 	}
 
 	printReport(stdout, report)
+	if *failOnErrors && len(report.Errors) > 0 {
+		return 3
+	}
 	return 0
 }
 
@@ -80,6 +91,7 @@ func printReport(output io.Writer, report stats.Report) {
 	fmt.Fprintf(output, "Total lines:     %d\n", report.TotalLines)
 	fmt.Fprintf(output, "Ignored folders: %d\n", len(report.IgnoredFolders))
 	fmt.Fprintf(output, "Excluded paths:  %d\n", len(report.ExcludedPaths))
+	fmt.Fprintf(output, "Scan errors:     %d\n", len(report.Errors))
 
 	fmt.Fprintln(output, "\nBy extension:")
 	fmt.Fprintf(output, "  %-16s %10s %12s\n", "EXTENSION", "FILES", "LINES")
@@ -106,6 +118,13 @@ func printReport(output io.Writer, report stats.Report) {
 		fmt.Fprintln(output, "\nExcluded paths:")
 		for _, excluded := range report.ExcludedPaths {
 			fmt.Fprintf(output, "  %s\n", filepath.ToSlash(excluded))
+		}
+	}
+
+	if len(report.Errors) > 0 {
+		fmt.Fprintln(output, "\nScan errors:")
+		for _, issue := range report.Errors {
+			fmt.Fprintf(output, "  %s  %s  %s\n", issue.Kind, filepath.ToSlash(issue.Path), issue.Message)
 		}
 	}
 }

@@ -37,6 +37,7 @@ type FileStat struct {
 
 // Report is the result of scanning a directory tree.
 type Report struct {
+	Version        string          `json:"version"`
 	Root           string          `json:"root"`
 	Files          int             `json:"files"`
 	TotalLines     int             `json:"total_lines"`
@@ -44,6 +45,14 @@ type Report struct {
 	LargestFiles   []FileStat      `json:"largest_files"`
 	IgnoredFolders []string        `json:"ignored_folders"`
 	ExcludedPaths  []string        `json:"excluded_paths"`
+	Errors         []ScanIssue     `json:"errors"`
+}
+
+// ScanIssue describes one path that could not be scanned completely.
+type ScanIssue struct {
+	Kind    string `json:"kind"`
+	Path    string `json:"path"`
+	Message string `json:"message"`
 }
 
 // ScanOptions controls result size and repository-relative exclusions.
@@ -61,6 +70,10 @@ func Scan(root string, largestLimit int) (Report, error) {
 
 // ScanWithOptions scans root with validated, slash-normalized exclusion globs.
 func ScanWithOptions(root string, options ScanOptions) (Report, error) {
+	return scanWithOptions(root, options, countLines)
+}
+
+func scanWithOptions(root string, options ScanOptions, lineCounter func(string) (int, error)) (Report, error) {
 	largestLimit := options.LargestLimit
 	if largestLimit < 0 {
 		return Report{}, fmt.Errorf("largest-file limit must be zero or greater")
@@ -87,18 +100,26 @@ func ScanWithOptions(root string, options ScanOptions) (Report, error) {
 	}
 
 	report := Report{
+		Version:        "1",
 		Root:           absoluteRoot,
 		ByExtension:    make([]ExtensionStat, 0),
 		LargestFiles:   make([]FileStat, 0),
 		IgnoredFolders: make([]string, 0),
 		ExcludedPaths:  make([]string, 0),
+		Errors:         make([]ScanIssue, 0),
 	}
 	byExtension := make(map[string]*ExtensionStat)
 	files := make([]FileStat, 0)
 
 	err = filepath.WalkDir(absoluteRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			if path == absoluteRoot {
+				return walkErr
+			}
+			report.Errors = append(report.Errors, ScanIssue{
+				Kind: "walk-error", Path: portableRelativePath(absoluteRoot, path), Message: "cannot access path",
+			})
+			return nil
 		}
 		if entry.IsDir() {
 			if path != absoluteRoot && isIgnoredDirectory(entry.Name()) {
@@ -122,15 +143,21 @@ func ScanWithOptions(root string, options ScanOptions) (Report, error) {
 
 		info, err := entry.Info()
 		if err != nil {
-			return err
+			report.Errors = append(report.Errors, ScanIssue{
+				Kind: "metadata-error", Path: portableRelativePath(absoluteRoot, path), Message: "cannot inspect file metadata",
+			})
+			return nil
 		}
 		if !info.Mode().IsRegular() {
 			return nil
 		}
 
-		lines, err := countLines(path)
+		lines, err := lineCounter(path)
 		if err != nil {
-			return fmt.Errorf("count lines in %s: %w", path, err)
+			report.Errors = append(report.Errors, ScanIssue{
+				Kind: "read-error", Path: relative, Message: "cannot read file",
+			})
+			return nil
 		}
 		extension := extensionFor(entry.Name())
 		group, ok := byExtension[extension]
@@ -161,6 +188,12 @@ func ScanWithOptions(root string, options ScanOptions) (Report, error) {
 	})
 	sort.Strings(report.IgnoredFolders)
 	sort.Strings(report.ExcludedPaths)
+	sort.Slice(report.Errors, func(i, j int) bool {
+		if report.Errors[i].Path == report.Errors[j].Path {
+			return report.Errors[i].Kind < report.Errors[j].Kind
+		}
+		return report.Errors[i].Path < report.Errors[j].Path
+	})
 	sort.Slice(files, func(i, j int) bool {
 		if files[i].Bytes == files[j].Bytes {
 			return files[i].Path < files[j].Path
@@ -173,6 +206,10 @@ func ScanWithOptions(root string, options ScanOptions) (Report, error) {
 	report.LargestFiles = append(report.LargestFiles, files[:largestLimit]...)
 
 	return report, nil
+}
+
+func portableRelativePath(root, filePath string) string {
+	return filepath.ToSlash(relativePath(root, filePath))
 }
 
 // NormalizeExcludePattern validates a pattern and returns portable slash form.
