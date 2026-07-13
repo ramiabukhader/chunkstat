@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,60 @@ func TestRunSupportsRepeatedExclusions(t *testing.T) {
 	}
 	if report.Files != 1 || len(report.ExcludedPaths) != 2 {
 		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestRunEmitsPartialReportAndOptionalErrorExit(t *testing.T) {
+	syntheticScan := func(root string, options stats.ScanOptions) (stats.Report, error) {
+		return stats.Report{
+			Version: "1", Root: root,
+			ByExtension: []stats.ExtensionStat{}, LargestFiles: []stats.FileStat{},
+			IgnoredFolders: []string{}, ExcludedPaths: []string{},
+			Errors: []stats.ScanIssue{{Kind: "read-error", Path: "bad.txt", Message: "cannot read file"}},
+		}, nil
+	}
+	for _, test := range []struct {
+		args []string
+		code int
+	}{
+		{args: []string{"-json"}, code: 0},
+		{args: []string{"-json", "--fail-on-errors"}, code: 3},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := runWithScanner(test.args, &stdout, &stderr, syntheticScan); code != test.code {
+			t.Fatalf("code = %d, want %d", code, test.code)
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("stderr = %q, want empty for completed partial scan", stderr.String())
+		}
+		var report stats.Report
+		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil || len(report.Errors) != 1 {
+			t.Fatalf("partial JSON = %#v, %v", report, err)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runWithScanner([]string{"--fail-on-errors"}, &stdout, &stderr, syntheticScan); code != 3 {
+		t.Fatalf("human code = %d, want 3", code)
+	}
+	if !strings.Contains(stdout.String(), "Scan errors:     1") || !strings.Contains(stdout.String(), "read-error  bad.txt") {
+		t.Fatalf("human partial report = %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("human stderr = %q", stderr.String())
+	}
+}
+
+func TestRunHardFailureUsesStderrWithoutReport(t *testing.T) {
+	hardFailure := func(string, stats.ScanOptions) (stats.Report, error) {
+		return stats.Report{}, errors.New("invalid root")
+	}
+	var stdout, stderr bytes.Buffer
+	if code := runWithScanner([]string{"-json"}, &stdout, &stderr, hardFailure); code != 1 {
+		t.Fatalf("code = %d, want 1", code)
+	}
+	if stdout.Len() != 0 || !strings.Contains(stderr.String(), "invalid root") {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 

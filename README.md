@@ -58,6 +58,12 @@ Patterns use slash-normalized Go glob syntax on every operating system. A plain
 directory path excludes its entire tree. Absolute paths, parent traversal, and
 empty patterns are rejected before scanning.
 
+If a file disappears or cannot be read during a walk, chunkstat preserves the
+other statistics and records a repository-relative structured error. Use
+`--fail-on-errors` when CI should emit the report and then exit 3 for such a
+partial scan. Invalid roots remain hard failures (exit 1); invalid CLI usage is
+exit 2. JSON reports include `"version": "1"` and an `errors` array.
+
 Example terminal report:
 
 ```text
@@ -66,6 +72,7 @@ Files:           42
 Total lines:     3860
 Ignored folders: 2
 Excluded paths:  0
+Scan errors:     0
 
 By extension:
   EXTENSION             FILES        LINES
