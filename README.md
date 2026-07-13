@@ -48,6 +48,16 @@ Produce machine-readable output:
 chunkstat -json .
 ```
 
+Exclude repository-relative files or directory trees with repeatable patterns:
+
+```sh
+chunkstat --exclude generated --exclude "*.tmp" .
+```
+
+Patterns use slash-normalized Go glob syntax on every operating system. A plain
+directory path excludes its entire tree. Absolute paths, parent traversal, and
+empty patterns are rejected before scanning.
+
 Example terminal report:
 
 ```text
@@ -55,6 +65,7 @@ Directory:       /home/user/project
 Files:           42
 Total lines:     3860
 Ignored folders: 2
+Excluded paths:  0
 
 By extension:
   EXTENSION             FILES        LINES
