@@ -1,0 +1,14 @@
+# Build output
+/chunkstat
+/chunkstat.exe
+/dist/
+
+# Test and coverage output
+*.test
+coverage.out
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
