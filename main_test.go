@@ -31,6 +31,34 @@ func TestRunProducesJSON(t *testing.T) {
 	}
 }
 
+func TestRunSupportsRepeatedExclusions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "generated"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name := range map[string]struct{}{"keep.go": {}, "skip.tmp": {}, "generated/code.go": {}} {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("one\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	args := []string{"-json", "--exclude", "*.tmp", "--exclude", `generated\`, root}
+	if code := run(args, &stdout, &stderr); code != 0 {
+		t.Fatalf("run() code = %d, stderr = %q", code, stderr.String())
+	}
+	var report stats.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Files != 1 || len(report.ExcludedPaths) != 2 {
+		t.Fatalf("report = %#v", report)
+	}
+}
+
 func TestRunValidatesArguments(t *testing.T) {
 	tests := []struct {
 		name string
@@ -40,6 +68,7 @@ func TestRunValidatesArguments(t *testing.T) {
 		{name: "negative top", args: []string{"-top", "-1"}, want: "must be zero or greater"},
 		{name: "extra directory", args: []string{"one", "two"}, want: "Usage: chunkstat"},
 		{name: "unknown flag", args: []string{"-unknown"}, want: "flag provided but not defined"},
+		{name: "unsafe exclude", args: []string{"--exclude", "../outside"}, want: "must not traverse"},
 	}
 
 	for _, test := range tests {
