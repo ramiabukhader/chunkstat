@@ -76,9 +76,12 @@ Format and validate the project with:
 
 ```sh
 gofmt -w .
-go test ./...
+go test -race ./...
 go vet ./...
+go build ./...
 ```
+
+GitHub Actions runs the same checks for every pull request and push to `main`.
 
 ## Notes
 
